@@ -1,0 +1,244 @@
+# -*- coding: utf-8 -*-
+"""
+Spyder Editor
+
+This is a temporary script file.
+"""
+import os
+import pyodbc
+import numpy as np
+import pandas as pd
+import datetime as dt
+
+"""
+#sql导入方法1
+conn = pyodbc.connect(
+        r'DRIVER={SQL Server Native Client 11.0};SERVER=localhost;DATABASE=YY;UID=sa;PWD=ps123456')
+cursor = conn.cursor()
+
+cursor.execute("select top 25 * from base_hqjy")
+
+rows = cursor.fetchall()
+#for row in rows:
+#   print(row)	
+df = pd.DataFrame([tuple(row) for row in rows])
+"""
+    
+
+#sql导入方法2
+sql = 'select * from base_hqjy'
+cnn = pyodbc.connect(
+        r'DRIVER={SQL Server Native Client 11.0};SERVER=localhost;DATABASE=YY;UID=sa;PWD=ps123456')
+
+hq = pd.read_sql(sql, cnn)
+
+#hq.assign(year=hq['交易时间'].apply(lambda x: x.year))
+
+'''
+#导入excel
+os.chdir('D:/Downloads/')
+print(os.getcwd())
+hq = pd.read_excel('ttt.xlsx','Sheet1')
+'''
+def Changedatetime(x):  #时间差数据类型换算
+    x=x.total_seconds();
+    return x;
+
+
+#分组排序
+hq_rnk=(hq.assign(rnk=hq.groupby(['用户名'])['交易时间']
+        .rank(method='first', ascending=True))
+        .sort_values(['用户名','交易时间'])
+        )
+#历史首末订单数据
+hq_fst=hq_rnk.groupby(['用户名']).first()
+hq_lst=hq_rnk.groupby(['用户名']).last()
+
+#末次前推一年数据
+hq_yr=pd.merge(hq,hq_lst[['交易时间']],left_on='用户名',right_index=True,suffixes=('_订单','_末次'))
+hq_yr['交易时间_末次']-hq_yr['交易时间_订单']
+
+hq_yr['前推一年']=hq_yr['交易时间_末次']-hq_yr['交易时间_订单']
+hq_yr['前推一年_秒']=hq_yr['前推一年'].apply(Changedatetime)/60/60/24
+
+hq_yr=hq_yr[hq_yr['前推一年_秒']<366]
+
+hq_yr_rnk=(hq_yr.assign(rnk_y=hq_yr.groupby(['用户名'])['交易时间_订单']
+        .rank(method='first', ascending=True))
+        .sort_values(['用户名','交易时间_订单'])
+        )
+hq_yr_fst=hq_yr_rnk.groupby(['用户名']).first()
+hq_yr_lst=hq_yr_rnk.groupby(['用户名']).last()
+
+
+
+#计算交易克重、金额
+hq_sum=hq_yr.sort_values(['用户名','交易时间_订单']).groupby('用户名').sum().drop(['成交价','前推一年_秒'],axis=1)
+hq_cnt=hq_yr.sort_values(['用户名','交易时间_订单']).groupby('用户名').size()
+
+#计算次数
+hq_cnt=pd.DataFrame(hq_cnt,columns=['次数'])
+hq_s_c=pd.merge(hq_sum,hq_cnt,left_index=True,right_index=True)
+hq_s_c['次均克重']=hq_s_c['交易克数']/hq_s_c['次数']
+hq_s_c['次均金额']=hq_s_c['交易金额']/hq_s_c['次数']
+
+
+#汇总
+hq_rst=pd.merge(hq_s_c,hq_yr_fst,right_index=True,left_index=True,suffixes=('_总计','_首单'))
+hq_rst=pd.merge(hq_rst,hq_yr_lst,right_index=True,left_index=True,suffixes=('_首单','_末单'))
+
+hq_rst=hq_rst.drop(['交易时间_末次_首单',
+                    'rnk_y_首单',
+                    '交易时间_末次_末单',
+                    '前推一年_末单',
+                    '前推一年_秒_末单',
+                    'rnk_y_末单'],axis=1)
+
+
+'''
+hq_r_s_c=pd.merge(hq_s_c,hq_rnk,right_on='用户名',left_index=True,suffixes=('_总计','_订单'))
+#计算末单
+hq_lst=hq_r_s_c[hq_r_s_c['rnk']==hq_r_s_c['次数']]
+hq_lst.rename(columns={"交易克数_订单":"交易克数_末次","交易金额_订单":"周期_秒"})
+
+#计算首单
+hq_fst=hq_r_s_c[hq_r_s_c['rnk']==1][['用户名','交易时间','交易克数_订单','交易金额_订单','订单号','交易类型','成交价']]
+hq_rst=pd.merge(hq_lst,hq_fst,left_on='用户名',right_on='用户名',suffixes=('_末次','_首次'))
+'''
+
+#结果
+hq_rst['平均间隔']=(hq_rst['交易时间_订单_末单']-hq_rst['交易时间_订单_首单'])/(hq_rst['次数']-1)
+hq_rst['首末间隔']=hq_rst['交易时间_订单_末单']-hq_rst['交易时间_订单_首单']
+hq_rst['首单间隔']=dt.datetime(2018, 1, 1, 00, 00)-hq_rst['交易时间_订单_首单']
+hq_rst['末单间隔']=dt.datetime(2018, 1, 1, 00, 00)-hq_rst['交易时间_订单_末单']
+
+
+#时间调整
+hq_rst['平均间隔']=hq_rst['平均间隔'].apply(Changedatetime)/60/60/24
+hq_rst['首末间隔']=hq_rst['首末间隔'].apply(Changedatetime)/60/60/24
+hq_rst['首单间隔']=hq_rst['首单间隔'].apply(Changedatetime)/60/60/24
+hq_rst['末单间隔']=hq_rst['末单间隔'].apply(Changedatetime)/60/60/24
+
+
+
+NaNs=np.isnan(hq_rst['平均间隔'])
+hq_rst['平均间隔'][NaNs]=0
+
+#标准化
+def MaxMinNormalization(x,Max,Min):  
+    x = (x - Min) / (Max - Min);  
+    return x;
+
+tt=MaxMinNormalization(hq_rst[['次数','次均金额','末单间隔','平均间隔','首末间隔','首单间隔']],
+                       hq_rst[['次数','次均金额','末单间隔','平均间隔','首末间隔','首单间隔']].max(),
+                       hq_rst[['次数','次均金额','末单间隔','平均间隔','首末间隔','首单间隔']].min())
+tt_rst=pd.merge(tt,hq_rst[['次数','次均金额','末单间隔','平均间隔','首末间隔','首单间隔']],left_index=True,right_index=True)
+
+
+#聚类分析
+import os
+import pandas as pd
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import KMeans
+from sklearn.cluster import DBSCAN
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+#3D绘图
+fig = plt.figure()
+ax3D = fig.add_subplot(111, projection='3d')
+ax3D.scatter(tt['次均金额'],tt['末单间隔'],tt['次数'],marker='o')
+ax3D.set_xlabel('x')
+ax3D.set_ylabel('y')    
+ax3D.set_zlabel('z')
+plt.show()
+
+
+from sklearn import metrics
+
+# kmeans聚类
+kmeans = KMeans(n_clusters=9)
+kmeans.fit(tt[['次均金额','末单间隔','次数','平均间隔','首末间隔','首单间隔']])
+kmeans_pred = kmeans.fit_predict(tt[['次均金额','末单间隔','次数','平均间隔','首末间隔','首单间隔']])
+print('kmeans cluster:',kmeans_pred)
+tt[u'类型']=kmeans_pred
+print(tt[['次均金额','末单间隔','次数','平均间隔','首末间隔','首单间隔']])
+fig = plt.figure()
+ax3D = fig.add_subplot(111, projection='3d')
+ax3D.scatter(tt['次均金额'],tt['末单间隔'],tt['次数'],c=kmeans_pred,marker='o')
+ax3D.set_xlabel('x')
+ax3D.set_ylabel('y')
+ax3D.set_zlabel('z')
+fig.set_size_inches(12.5, 8.5)
+plt.show()
+#评分
+metrics.silhouette_score(tt, kmeans.labels_, metric='euclidean')
+metrics.calinski_harabaz_score(tt, kmeans.labels_)
+
+
+
+#结果统计
+#r1=tt['类型'].groupby(tt['类型']).count()
+r1 = pd.Series(kmeans.labels_).value_counts()
+r2 = pd.DataFrame(kmeans.cluster_centers_)
+r = pd.concat([r2, r1], axis = 1)
+r.columns = list(tt.iloc[:,:6].columns) +[u'个数']
+print(r)
+
+
+
+
+#降维
+from sklearn.manifold import TSNE
+tsne = TSNE()
+aa=tsne.fit_transform(tt.drop('类型',axis=1)) #进行数据降维
+#tsne = pd.DataFrame(tsne.embedding_, index = tt.head(500).index) #转换数据格式
+bb=pd.DataFrame(aa,columns=['x','y'])
+bb=MaxMinNormalization(bb[['x','y']],bb[['x','y']].max(),bb[['x','y']].min())
+
+tt['序号']=1
+tt['序号']=tt['序号'].cumsum()-1
+
+cc=pd.merge(tt,bb,left_on='序号',right_index=True)
+import matplotlib.pyplot as plt
+plt.rcParams['font.sans-serif'] = ['SimHei'] #用来正常显示中文标签
+plt.rcParams['axes.unicode_minus'] = False #用来正常显示负号
+#不同类别用不同颜色和样式绘图
+'''
+d =cc[cc[u'类型'] == 6]
+plt.plot(d['x'], d['y'], 'r.')
+d =cc[cc[u'类型'] == 7]
+plt.plot(d['x'], d['y'], 'y.')
+d =cc[cc[u'类型'] == 8]
+plt.plot(d['x'], d['y'], 'b.')
+plt.show()
+'''
+
+#降维散点图
+fig = plt.figure()
+ax = fig.add_subplot(111)
+fig.set_size_inches(12.5, 8.5)
+for i in range(9):
+    d =cc[cc[u'类型'] == i]
+    ax.scatter(d['x'], d['y'], cmap=True,marker='o',s=1)
+
+
+
+
+#p1=tt['类型'].groupby(tt['类型']).count()
+
+
+
+
+'''
+f = lambda x: x.max()
+t5=t4.groupby(['用户名'])['rnk'].apply(f)
+t5=pd.DataFrame(t5)
+t5=t5.rename(columns={"rnk":"rnk_m"})
+'''
+
+'''
+base_hqjy[base_hqjy.用户名=='13095039686']
+grouped=bh['交易克数'].groupby([bh['用户名'],bh['交易类型']]).sum()
+'''
+
